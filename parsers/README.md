@@ -306,3 +306,317 @@ If log parsing fails:
 ## License
 
 Internal use only
+
+------------------
+# Knowledge Graph Ingestion Pipeline
+
+Simple pipeline to parse microservices code and logs into a graph database for RCA (Root Cause Analysis).
+
+---
+
+## Overview
+
+This pipeline extracts code structure and runtime logs, then connects them to enable questions like:
+- "Why did this order fail?"
+- "Which function caused this error?"
+- "Show me the execution path for trace XYZ"
+
+---
+
+## Components
+
+### 1. Code Parser (`code_parser.py`)
+
+**What it does:**
+- Reads Python files from microservices
+- Extracts functions, classes, and methods using Python AST
+- Identifies function calls (who calls whom)
+
+**Output Schema:**
+
+**CodeNodes:**
+```json
+{
+  "name": "validate_quantity",
+  "type": "function",
+  "serviceName": "trade_service",
+  "filePath": "trade_service/src/app.py",
+  "summary": "Validates order quantity",
+  "snippet": "def validate_quantity(quantity: int):\n    if quantity < 0:\n        return 0\n    ..."
+}
+```
+
+**Code Relationships:**
+```json
+{
+  "sourceName": "place_order",
+  "targetName": "validate_quantity",
+  "relationshipType": "CALLS",
+  "description": "place_order calls validate_quantity"
+}
+```
+
+**Relationship Types:**
+- `CALLS`: Function A calls Function B
+- `CONTAINS`: Class contains Method
+
+---
+
+### 2. Log Parser (`log_parser.py`)
+
+**What it does:**
+- Reads trace-specific log files (`logs/trace_*.log`)
+- Parses JSON log entries
+- Creates temporal sequence (what happened after what)
+
+**Output Schema:**
+
+**LogEvents:**
+```json
+{
+  "timestamp": "2025-12-17T23:40:18.123Z",
+  "service": "trade_service",
+  "level": "ERROR",
+  "traceId": "abc-123-def-456",
+  "message": "Invalid quantity: -50",
+  "errorCode": "INVALID_QUANTITY"
+}
+```
+
+**Log Relationships:**
+```json
+{
+  "source": "abc-123_2025-12-17T23:40:18.123Z_trade_service",
+  "target": "abc-123_2025-12-17T23:40:18.456Z_orchestrator",
+  "type": "next_log",
+  "description": "Temporal sequence in trace abc-123"
+}
+```
+
+**Relationship Types:**
+- `next_log`: Event A happened before Event B (in same trace)
+
+---
+
+### 3. Code-Log Linker (`link_code_logs.py`)
+
+**What it does:**
+Connects code and logs using 3 strategies:
+
+**Strategy 1: Function Name Matching**
+- Finds logs that mention function names
+- Example: Log "Validating quantity: -50" → Links to `validate_quantity()` function
+
+**Strategy 2: Error Pattern Matching**
+- Links error logs to error-handling functions
+- Example: "Unknown symbol" error → Links to `get_market_price()` function
+
+**Strategy 3: Service Context**
+- Links functions to logs from same service
+- Creates context relationships
+
+**Output Schema:**
+
+**Code-to-Log Relationships:**
+```json
+{
+  "type": "executed_in",
+  "description": "validate_quantity executed and logged",
+  "from": "validate_quantity CodeNode",
+  "to": "LogEvent"
+}
+```
+
+**Relationship Types:**
+- `executed_in`: Code was executed and produced this log
+- `logged_error`: Code logged this error
+- `service_context`: Code and log share same service context
+
+---
+
+## Complete Graph Structure
+
+```
+CodeNodes (57 nodes)
+├── Functions (validate_quantity, calculate_pnl, etc.)
+├── Classes (OrderRequest, RiskAssessmentResponse, etc.)
+└── Methods (JsonFormatter.format, etc.)
+     │
+     │ CALLS relationships
+     ├──> Function calls another function
+     │
+     │ CONTAINS relationships  
+     └──> Class contains methods
+
+LogEvents (varies by runtime)
+├── timestamp
+├── service
+├── level (INFO/ERROR/WARNING)
+├── traceId
+└── message
+     │
+     │ next_log relationships
+     └──> Temporal sequence within trace
+
+Code ←→ Log Connections
+├── executed_in: Function → Log
+├── logged_error: Function → Error Log
+└── service_context: Function ↔ Service Logs
+```
+
+---
+
+## Database Tables (SQL Server Graph)
+
+### CodeNodes (AS NODE)
+| Column | Type | Description |
+|--------|------|-------------|
+| id | INT | Primary key |
+| name | NVARCHAR | Function/class name |
+| type | NVARCHAR | function/class/method |
+| serviceName | NVARCHAR | orchestrator/trade_service/etc |
+| filePath | NVARCHAR | Source file path |
+| summary | NVARCHAR | First line of docstring |
+| snippet | NVARCHAR | Code snippet |
+
+### LogEvents (AS NODE)
+| Column | Type | Description |
+|--------|------|-------------|
+| id | INT | Primary key |
+| timestamp | NVARCHAR | ISO timestamp |
+| service | NVARCHAR | Service name |
+| level | NVARCHAR | INFO/ERROR/WARNING/DEBUG |
+| traceId | NVARCHAR | Distributed trace ID |
+| message | NVARCHAR | Log message |
+| errorCode | NVARCHAR | Error code if applicable |
+
+### Relationships (AS EDGE)
+| Column | Type | Description |
+|--------|------|-------------|
+| id | INT | Primary key |
+| relationshipType | NVARCHAR | CALLS/next_log/executed_in/etc |
+| description | NVARCHAR | Human-readable description |
+| $from_id | NODE_ID | Source node |
+| $to_id | NODE_ID | Target node |
+
+---
+
+## Usage
+
+**Generate JSON files only (no database):**
+```bash
+python ingest_pipeline.py
+```
+Creates:
+- `code_graph.json` - All code nodes and relationships
+- `log_graph.json` - All log events and temporal relationships
+
+**Store in database:**
+```bash
+python ingest_pipeline.py --use-database
+```
+
+**Clean database:**
+```bash
+python cleanup_database.py
+```
+
+---
+
+## Configuration
+
+Edit `.env` file:
+```env
+DB_SERVER=NAGARAJ-08
+DB_DATABASE=trade_kg_db
+DB_DRIVER={ODBC Driver 17 for SQL Server}
+```
+
+---
+
+## Quick Verification Queries
+
+### View All Nodes (Code + Logs)
+```sql
+-- See sample of everything in the graph
+SELECT 'CODE' as NodeType, name as NodeName, [type] as SubType, serviceName as Service, NULL as TraceId
+FROM CodeNodes
+UNION ALL
+SELECT 'LOG' as NodeType, LEFT(message, 50) as NodeName, level as SubType, service as Service, traceId as TraceId
+FROM LogEvents
+ORDER BY NodeType, Service;
+```
+
+### View All Relationships
+```sql
+-- See all connections in the graph
+SELECT 
+    relationshipType as RelationType,
+    COUNT(*) as Count,
+    CASE 
+        WHEN relationshipType IN ('CALLS', 'CONTAINS') THEN 'Code-to-Code'
+        WHEN relationshipType = 'next_log' THEN 'Log-to-Log'
+        ELSE 'Code-to-Log'
+    END as Category
+FROM Relationships
+GROUP BY relationshipType
+ORDER BY Count DESC;
+```
+
+### Detailed Relationship View
+```sql
+-- See actual node connections (first 20)
+SELECT TOP 20
+    r.relationshipType,
+    COALESCE(cn1.name, le1.service + ': ' + LEFT(le1.message, 30)) as FromNode,
+    COALESCE(cn2.name, le2.service + ': ' + LEFT(le2.message, 30)) as ToNode,
+    r.description
+FROM Relationships r
+LEFT JOIN CodeNodes cn1 ON r.$from_id = cn1.$node_id
+LEFT JOIN CodeNodes cn2 ON r.$to_id = cn2.$node_id
+LEFT JOIN LogEvents le1 ON r.$from_id = le1.$node_id
+LEFT JOIN LogEvents le2 ON r.$to_id = le2.$node_id;
+```
+
+---
+
+## Example Queries
+
+**Find function and its logs:**
+```sql
+SELECT cn.name, le.message, le.timestamp
+FROM CodeNodes cn
+JOIN Relationships r ON cn.$node_id = r.$from_id
+JOIN LogEvents le ON r.$to_id = le.$node_id
+WHERE cn.name = 'validate_quantity';
+```
+
+**Trace execution path:**
+```sql
+SELECT timestamp, service, message
+FROM LogEvents
+WHERE traceId = 'abc-123'
+ORDER BY timestamp;
+```
+
+**Find what function calls what:**
+```sql
+SELECT cn1.name as Caller, cn2.name as Callee
+FROM CodeNodes cn1
+JOIN Relationships r ON cn1.$node_id = r.$from_id
+JOIN CodeNodes cn2 ON r.$to_id = cn2.$node_id
+WHERE r.relationshipType = 'CALLS';
+```
+
+---
+
+## Files
+
+- `code_parser.py` - Parse Python code using AST
+- `log_parser.py` - Parse JSON log files
+- `link_code_logs.py` - Connect code to logs
+- `ingest_pipeline.py` - Orchestrate full pipeline
+- `db_config.py` - Database connection
+- `cleanup_database.py` - Delete all data
+- `create_schema.sql` - SQL Server schema
+
