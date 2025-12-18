@@ -1070,3 +1070,47 @@ GO
 
 
 ```
+
+--------
+
+```
+-- Example 1: Tracing a Function Execution
+-- Find what calculate_pnl function did during a specific trace
+
+DECLARE @TraceId NVARCHAR(200) = '61ca2bc2-527c-438d-87a3-e208ad998984';
+DECLARE @FunctionName NVARCHAR(200) = 'calculate_pnl';
+
+-- Show all logs created by this function in this trace
+SELECT 
+    le.timestamp,
+    cn.name as FunctionName,
+    cn.serviceName as Service,
+    le.level as LogLevel,
+    le.message as LogMessage,
+    r.relationshipType
+FROM CodeNodes cn
+JOIN Relationships r ON cn.$node_id = r.$from_id
+JOIN LogEvents le ON r.$to_id = le.$node_id
+WHERE cn.name = @FunctionName
+  AND le.traceId = @TraceId
+  AND r.relationshipType = 'executed_in'
+ORDER BY le.timestamp;
+
+-- Summary: How many logs did this function create?
+SELECT 
+    cn.name as FunctionName,
+    cn.serviceName as Service,
+    COUNT(*) as TotalLogsCreated,
+    COUNT(CASE WHEN le.level = 'ERROR' THEN 1 END) as ErrorLogs,
+    COUNT(CASE WHEN le.level = 'WARNING' THEN 1 END) as WarningLogs,
+    COUNT(CASE WHEN le.level = 'INFO' THEN 1 END) as InfoLogs
+FROM CodeNodes cn
+JOIN Relationships r ON cn.$node_id = r.$from_id
+JOIN LogEvents le ON r.$to_id = le.$node_id
+WHERE cn.name = @FunctionName
+  AND le.traceId = @TraceId
+  AND r.relationshipType = 'executed_in'
+GROUP BY cn.name, cn.serviceName;
+
+```
+
