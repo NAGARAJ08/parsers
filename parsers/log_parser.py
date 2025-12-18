@@ -35,8 +35,19 @@ class LogParser:
     
     def parse_service_logs(self, logs_dir, service_name):
         """Parse all trace log files in a service's logs directory"""
-        for log_file in logs_dir.glob('trace_*.log'):
-            trace_id = log_file.stem.replace('trace_', '')
+        # Support both trace_*.log and UUID.log formats
+        for log_file in logs_dir.glob('*.log'):
+            # Skip non-trace files
+            if log_file.name in ['orchestrator.log', 'trade_service.log', 'pricing_service.log', 'risk_service.log']:
+                continue
+            
+            # Extract trace ID from filename
+            if log_file.stem.startswith('trace_'):
+                trace_id = log_file.stem.replace('trace_', '')
+            else:
+                # Assume the filename itself is the trace ID
+                trace_id = log_file.stem
+            
             self.parse_log_file(log_file, service_name, trace_id)
     
     def parse_log_file(self, log_file, service_name, trace_id):
