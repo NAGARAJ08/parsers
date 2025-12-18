@@ -887,3 +887,186 @@ ORDER BY MIN(le.timestamp) DESC;
 GO
 
 ```
+
+---------
+
+```
+-- ============================================================
+-- SIMPLE TRACE FLOW ANALYSIS
+-- ============================================================
+-- Shows the end-to-end execution flow for a trace ID
+-- Easy to understand visualization of the Knowledge Graph
+-- ============================================================
+
+USE trade_kg_db;
+GO
+
+-- SET YOUR TRACE ID HERE:
+DECLARE @traceId VARCHAR(100) = '61ca2bc2-527c-438d-87a3-e208ad998984';
+
+PRINT '';
+PRINT '======================================================================';
+PRINT 'END-TO-END TRACE FLOW: ' + @traceId;
+PRINT '======================================================================';
+PRINT '';
+
+-- ============================================================
+-- 1. EXECUTION TIMELINE - What happened and when?
+-- ============================================================
+PRINT '1. EXECUTION TIMELINE';
+PRINT '----------------------------------------------------------------------';
+
+SELECT 
+    ROW_NUMBER() OVER (ORDER BY le.timestamp) as Step,
+    FORMAT(CAST(le.timestamp AS datetime2), 'HH:mm:ss.fff') as Time,
+    le.service as Service,
+    SUBSTRING(le.message, 1, 70) as Action
+FROM LogEvents le
+WHERE le.traceId = @traceId
+ORDER BY le.timestamp;
+
+PRINT '';
+
+-- ============================================================
+-- 2. FUNCTION EXECUTION MAP - Which code functions ran?
+-- ============================================================
+PRINT '2. FUNCTION EXECUTION MAP (Code → Logs)';
+PRINT '----------------------------------------------------------------------';
+
+SELECT 
+    cn.serviceName as Service,
+    cn.name as [Function],
+    COUNT(*) as [Logs Created],
+    STRING_AGG(CAST(le.level AS VARCHAR), ', ') as [Log Levels]
+FROM CodeNodes cn
+JOIN Relationships r ON cn.$node_id = r.$from_id
+JOIN LogEvents le ON r.$to_id = le.$node_id
+WHERE le.traceId = @traceId 
+  AND r.relationshipType = 'executed_in'
+GROUP BY cn.serviceName, cn.name
+ORDER BY cn.serviceName;
+
+PRINT '';
+
+-- ============================================================
+-- 3. SERVICE JOURNEY - How did the request flow?
+-- ============================================================
+PRINT '3. SERVICE JOURNEY';
+PRINT '----------------------------------------------------------------------';
+
+WITH ServiceFlow AS (
+    SELECT DISTINCT
+        ROW_NUMBER() OVER (ORDER BY MIN(le.timestamp)) as StepNum,
+        le.service,
+        MIN(le.timestamp) as FirstLog,
+        MAX(le.timestamp) as LastLog,
+        COUNT(*) as LogCount
+    FROM LogEvents le
+    WHERE le.traceId = @traceId
+    GROUP BY le.service
+)
+SELECT 
+    StepNum as [Step],
+    service as [Service],
+    FORMAT(CAST(FirstLog AS datetime2), 'HH:mm:ss.fff') as [Started],
+    FORMAT(CAST(LastLog AS datetime2), 'HH:mm:ss.fff') as [Ended],
+    LogCount as [Activities]
+FROM ServiceFlow
+ORDER BY StepNum;
+
+PRINT '';
+
+-- ============================================================
+-- 4. KEY FUNCTIONS EXECUTED - The main story
+-- ============================================================
+PRINT '4. KEY FUNCTIONS EXECUTED (In Order)';
+PRINT '----------------------------------------------------------------------';
+
+SELECT DISTINCT
+    FORMAT(CAST(le.timestamp AS datetime2), 'HH:mm:ss.fff') as Time,
+    cn.serviceName as Service,
+    cn.name as [Function Called],
+    SUBSTRING(le.message, 1, 60) as [What It Did]
+FROM CodeNodes cn
+JOIN Relationships r ON cn.$node_id = r.$from_id
+JOIN LogEvents le ON r.$to_id = le.$node_id
+WHERE le.traceId = @traceId 
+  AND r.relationshipType = 'executed_in'
+  AND le.message LIKE '%[[]%'  -- Only show logs with [function_name] prefix
+ORDER BY le.timestamp;
+
+PRINT '';
+
+-- ============================================================
+-- 5. VISUAL FLOW DIAGRAM
+-- ============================================================
+PRINT '5. VISUAL SERVICE FLOW';
+PRINT '----------------------------------------------------------------------';
+
+WITH ServiceTransitions AS (
+    SELECT DISTINCT
+        le1.service as FromService,
+        le2.service as ToService,
+        COUNT(*) as Calls
+    FROM LogEvents le1
+    JOIN Relationships r ON le1.$node_id = r.$from_id
+    JOIN LogEvents le2 ON r.$to_id = le2.$node_id
+    WHERE le1.traceId = @traceId 
+      AND r.relationshipType = 'next_log'
+      AND le1.service != le2.service
+    GROUP BY le1.service, le2.service
+)
+SELECT 
+    FromService as [From],
+    '───►' as [Flow],
+    ToService as [To],
+    Calls as [Times]
+FROM ServiceTransitions
+ORDER BY Calls DESC;
+
+PRINT '';
+
+-- ============================================================
+-- 6. QUICK SUMMARY
+-- ============================================================
+PRINT '6. SUMMARY';
+PRINT '----------------------------------------------------------------------';
+
+DECLARE @totalLogs INT, @executedFunctions INT, @servicesInvolved INT, @duration VARCHAR(20);
+
+SELECT @totalLogs = COUNT(*) FROM LogEvents WHERE traceId = @traceId;
+
+SELECT @executedFunctions = COUNT(DISTINCT cn.name)
+FROM CodeNodes cn
+JOIN Relationships r ON cn.$node_id = r.$from_id
+JOIN LogEvents le ON r.$to_id = le.$node_id
+WHERE le.traceId = @traceId AND r.relationshipType = 'executed_in';
+
+SELECT @servicesInvolved = COUNT(DISTINCT service)
+FROM LogEvents WHERE traceId = @traceId;
+
+SELECT @duration = 
+    CAST(
+        DATEDIFF(MILLISECOND, MIN(timestamp), MAX(timestamp)) 
+        AS VARCHAR
+    ) + ' ms'
+FROM LogEvents WHERE traceId = @traceId;
+
+SELECT 
+    @totalLogs as [Total Log Events],
+    @executedFunctions as [Functions Executed],
+    @servicesInvolved as [Services Involved],
+    @duration as [Duration];
+
+PRINT '';
+PRINT '======================================================================';
+PRINT 'This trace involved ' + CAST(@servicesInvolved AS VARCHAR) + ' services, ';
+PRINT 'executed ' + CAST(@executedFunctions AS VARCHAR) + ' functions, ';
+PRINT 'and completed in ' + @duration;
+PRINT '======================================================================';
+PRINT '';
+
+GO
+
+
+```
