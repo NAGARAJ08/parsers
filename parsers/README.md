@@ -453,3 +453,184 @@ WHERE r.relationshipType = 'CALLS';
 - `db_config.py` - Database connection
 - `cleanup_database.py` - Delete all data
 - `create_schema.sql` - SQL Server schema
+
+----------------------
+-- ============================================================
+-- TRACE RELATIONSHIP ANALYSIS QUERY
+-- ============================================================
+-- Instructions: Replace the trace ID below with your actual trace ID
+-- Then execute this entire script in SQL Server Management Studio
+-- ============================================================
+
+USE trade_kg_db;
+GO
+
+-- SET YOUR TRACE ID HERE:
+DECLARE @traceId VARCHAR(100) = '61ca2bc2-527c-438d-87a3-e208ad998984';
+
+PRINT '';
+PRINT '======================================================================';
+PRINT 'TRACE ANALYSIS FOR: ' + @traceId;
+PRINT '======================================================================';
+PRINT '';
+
+-- ============================================================
+-- 1. LOG EVENTS IN THIS TRACE (temporal sequence)
+-- ============================================================
+PRINT '1. LOG EVENTS IN THIS TRACE (temporal sequence):';
+PRINT '----------------------------------------------------------------------';
+
+SELECT 
+    le.id,
+    FORMAT(CAST(le.timestamp AS datetime2), 'HH:mm:ss.fff') as time,
+    le.service,
+    le.level,
+    SUBSTRING(le.message, 1, 100) as message
+FROM LogEvents le
+WHERE le.traceId = @traceId
+ORDER BY le.timestamp;
+
+PRINT '';
+
+-- 2. Show all code functions involved (via executed_in relationships)
+PRINT '';
+PRINT '2. CODE FUNCTIONS EXECUTED (via executed_in relationships):';
+PRINT '------------------------------------------------------------';
+SELECT 
+    cn.id as node_id,
+    cn.name as function_name,
+    cn.serviceName,
+    cn.[type],
+    COUNT(*) as num_logs_created
+FROM CodeNodes cn
+JOIN Relationships r ON cn.$node_id = r.$from_id
+JOIN LogEvents le ON r.$to_id = le.$node_id
+WHERE le.traceId = @traceId 
+  AND r.relationshipType = 'executed_in'
+GROUP BY cn.id, cn.name, cn.serviceName, cn.[type]
+ORDER BY cn.serviceName, cn.name;
+
+-- 3. Show executed_in relationship details
+PRINT '';
+PRINT '3. EXECUTED_IN RELATIONSHIPS (Function → Log):';
+PRINT '------------------------------------------------------------';
+SELECT 
+    cn.name as function_name,
+    cn.serviceName,
+    r.relationshipType,
+    SUBSTRING(le.message, 1, 100) as log_message,
+    le.level,
+    le.timestamp
+FROM CodeNodes cn
+JOIN Relationships r ON cn.$node_id = r.$from_id
+JOIN LogEvents le ON r.$to_id = le.$node_id
+WHERE le.traceId = @traceId 
+  AND r.relationshipType = 'executed_in'
+ORDER BY le.timestamp;
+
+-- 4. Show error relationships if any
+PRINT '';
+PRINT '4. ERROR RELATIONSHIPS (logged_error):';
+PRINT '------------------------------------------------------------';
+SELECT 
+    cn.name as function_name,
+    cn.serviceName,
+    r.relationshipType,
+    SUBSTRING(le.message, 1, 100) as error_message,
+    le.level
+FROM CodeNodes cn
+JOIN Relationships r ON cn.$node_id = r.$from_id
+JOIN LogEvents le ON r.$to_id = le.$node_id
+WHERE le.traceId = @traceId 
+  AND r.relationshipType = 'logged_error'
+ORDER BY le.timestamp;
+
+-- 5. Show temporal flow (next_log relationships)
+PRINT '';
+PRINT '5. TEMPORAL LOG FLOW (next_log relationships):';
+PRINT '------------------------------------------------------------';
+SELECT 
+    le1.service as from_service,
+    SUBSTRING(le1.message, 1, 50) as from_message,
+    r.relationshipType,
+    le2.service as to_service,
+    SUBSTRING(le2.message, 1, 50) as to_message
+FROM LogEvents le1
+JOIN Relationships r ON le1.$node_id = r.$from_id
+JOIN LogEvents le2 ON r.$to_id = le2.$node_id
+WHERE le1.traceId = @traceId 
+  AND r.relationshipType = 'next_log'
+ORDER BY le1.timestamp;
+
+-- 6. Summary statistics
+PRINT '';
+PRINT '6. SUMMARY STATISTICS:';
+PRINT '------------------------------------------------------------';
+SELECT 
+    'Total Log Events' as metric,
+    COUNT(*) as count
+FROM LogEvents 
+WHERE traceId = @traceId
+
+UNION ALL
+
+SELECT 
+    'Unique Functions Executed' as metric,
+    COUNT(DISTINCT cn.name) as count
+FROM CodeNodes cn
+JOIN Relationships r ON cn.$node_id = r.$from_id
+JOIN LogEvents le ON r.$to_id = le.$node_id
+WHERE le.traceId = @traceId 
+  AND r.relationshipType = 'executed_in'
+
+UNION ALL
+
+SELECT 
+    'executed_in links' as metric,
+    COUNT(*) as count
+FROM Relationships r
+JOIN LogEvents le ON r.$to_id = le.$node_id
+WHERE le.traceId = @traceId 
+  AND r.relationshipType = 'executed_in'
+
+UNION ALL
+
+SELECT 
+    'logged_error links' as metric,
+    COUNT(*) as count
+FROM Relationships r
+JOIN LogEvents le ON r.$to_id = le.$node_id
+WHERE le.traceId = @traceId 
+  AND r.relationshipType = 'logged_error'
+
+UNION ALL
+
+SELECT 
+    'next_log links' as metric,
+    COUNT(*) as count
+FROM Relationships r
+JOIN LogEvents le ON r.$to_id = le.$node_id
+WHERE le.traceId = @traceId 
+  AND r.relationshipType = 'next_log';
+
+-- 7. Show service call graph
+PRINT '';
+PRINT '7. SERVICE INTERACTION GRAPH:';
+PRINT '------------------------------------------------------------';
+SELECT DISTINCT
+    le1.service as from_service,
+    le2.service as to_service,
+    COUNT(*) as interaction_count
+FROM LogEvents le1
+JOIN Relationships r ON le1.$node_id = r.$from_id
+JOIN LogEvents le2 ON r.$to_id = le2.$node_id
+WHERE le1.traceId = @traceId 
+  AND r.relationshipType = 'next_log'
+  AND le1.service != le2.service
+GROUP BY le1.service, le2.service
+ORDER BY interaction_count DESC;
+
+PRINT '';
+PRINT '============================================================';
+PRINT 'END OF TRACE ANALYSIS';
+PRINT '============================================================';
