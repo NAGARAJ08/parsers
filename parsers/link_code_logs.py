@@ -37,8 +37,8 @@ class CodeLogLinker:
             conn.close()
     
     def link_by_function_name(self, cursor):
-        """Link functions to log events by matching function names in messages"""
-        print("\n1. Linking functions to logs by name matching...")
+        """Link functions to log events by matching function names - IMPROVED to use functionName field"""
+        print("\n1. Linking functions to logs by exact function field matching...")
         
         # Get all function nodes
         cursor.execute("""
@@ -49,14 +49,17 @@ class CodeLogLinker:
         functions = cursor.fetchall()
         
         links_created = 0
+        links_by_message = 0
+        
         for func_node_id, func_name, service_name in functions:
-            # Find log events that mention this function name
+            # IMPROVED: Match using the functionName column (extracted from 'function' field in logs)
+            # This is much more accurate than message or metadata pattern matching
             cursor.execute("""
                 SELECT $node_id, message, service
                 FROM LogEvents
-                WHERE message LIKE ?
-                AND service = ?
-            """, (f'%{func_name}%', service_name))
+                WHERE service = ?
+                AND functionName = ?
+            """, (service_name, func_name))
             
             matching_logs = cursor.fetchall()
             
@@ -67,30 +70,111 @@ class CodeLogLinker:
                     VALUES (?, ?, ?, ?, ?)
                 """, (
                     'executed_in',
-                    f"Function {func_name} executed and logged",
+                    f"Function {func_name} executed and logged (exact match)",
                     datetime.now().isoformat(),
                     func_node_id,
                     log_node_id
                 ))
                 links_created += 1
+            
+            # FALLBACK: Also try message pattern matching for logs without functionName
+            cursor.execute("""
+                SELECT $node_id, message, service
+                FROM LogEvents
+                WHERE message LIKE ?
+                AND service = ?
+                AND (functionName IS NULL OR functionName = '')
+            """, (f'%[{func_name}]%', service_name))
+            
+            fallback_logs = cursor.fetchall()
+            
+            for log_node_id, message, log_service in fallback_logs:
+                # Create relationship: CodeNode -> LogEvent (executed_in)
+                cursor.execute("""
+                    INSERT INTO Relationships (relationshipType, description, timestamp, $from_id, $to_id)
+                    VALUES (?, ?, ?, ?, ?)
+                """, (
+                    'executed_in',
+                    f"Function {func_name} executed and logged (pattern match)",
+                    datetime.now().isoformat(),
+                    func_node_id,
+                    log_node_id
+                ))
+                links_by_message += 1
         
-        print(f"  Created {links_created} function-to-log links")
+        print(f"  Created {links_created} function-to-log links (exact functionName match)")
+        print(f"  Created {links_by_message} function-to-log links (message pattern match)")
     
     def link_by_error_handling(self, cursor):
-        """Link functions that raise errors to error log events"""
+        """Link functions that raise errors to error log events - IMPROVED to use exception field"""
         print("\n2. Linking error-handling code to error logs...")
         
-        # Define error patterns and their likely source functions
+        # IMPROVED: First link using exception stack traces
+        print("  2a. Linking via exception stack traces...")
+        cursor.execute("""
+            SELECT $node_id, message, exception, service
+            FROM LogEvents
+            WHERE level = 'ERROR' AND exception IS NOT NULL AND exception != ''
+        """)
+        
+        error_logs_with_traces = cursor.fetchall()
+        trace_links_created = 0
+        
+        for log_node_id, message, exception, service in error_logs_with_traces:
+            # Parse exception stack trace to find function names
+            # Stack traces contain lines like: "File "path/app.py", line X, in function_name"
+            if exception:
+                import re
+                # Extract function names from stack trace
+                func_matches = re.findall(r'in (\w+)', exception)
+                
+                for func_name in func_matches:
+                    # Find matching code node
+                    cursor.execute("""
+                        SELECT $node_id, serviceName
+                        FROM CodeNodes
+                        WHERE name = ? AND type = 'function' AND serviceName = ?
+                    """, (func_name, service))
+                    
+                    func_result = cursor.fetchone()
+                    if func_result:
+                        func_node_id, service_name = func_result
+                        
+                        # Create relationship: CodeNode -> LogEvent (raised_exception)
+                        cursor.execute("""
+                            INSERT INTO Relationships (relationshipType, description, timestamp, $from_id, $to_id)
+                            VALUES (?, ?, ?, ?, ?)
+                        """, (
+                            'raised_exception',
+                            f"Function {func_name} raised exception (from stack trace)",
+                            datetime.now().isoformat(),
+                            func_node_id,
+                            log_node_id
+                        ))
+                        trace_links_created += 1
+        
+        print(f"    Created {trace_links_created} exception-to-function links via stack traces")
+        
+        # FALLBACK: Define error patterns and their likely source functions
+        print("  2b. Linking via error patterns...")
         error_patterns = {
             'Unknown symbol': 'get_market_price',
             'Invalid quantity': 'validate_quantity',
             'Risk assessment failed': 'assess_risk',
             'PnL integrity check failed': 'assess_risk',
-            'execution timed out': 'assess_risk'
+            'execution timed out': 'assess_risk',
+            'Service timeout': 'call_service',
+            'Service call failed': 'call_service',
+            'Order placement failed': 'place_order',
+            'Pricing calculation failed': 'calculate_pnl',
+            'Unexpected error': None  # Generic, skip
         }
         
-        links_created = 0
+        pattern_links_created = 0
         for error_pattern, func_name in error_patterns.items():
+            if func_name is None:
+                continue
+                
             # Get function node
             cursor.execute("""
                 SELECT $node_id, serviceName
@@ -127,9 +211,9 @@ class CodeLogLinker:
                     func_node_id,
                     log_node_id
                 ))
-                links_created += 1
+                pattern_links_created += 1
         
-        print(f"  Created {links_created} error-handling links")
+        print(f"    Created {pattern_links_created} error-handling links via patterns")
     
     def link_service_to_logs(self, cursor):
         """Link service modules to all logs from that service"""

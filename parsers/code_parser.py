@@ -7,7 +7,7 @@ from db_config import DatabaseConfig
 
 class CodeParser:
 
-    def __init__(self, use_database=False):
+    def __init__(self, use_database=True):
         self.code_nodes = []
         self.relationships = []
         self.use_database = use_database
@@ -55,6 +55,15 @@ class CodeParser:
 
     def extract_function(self, node, filepath, service_name, source, class_name):
         function_name = node.name
+        
+        # Skip utility/infrastructure functions - only parse business logic
+        utility_functions = {
+            'JsonFormatter', 'format', 'get_trace_logger', 'get_trace_id',
+            'TraceFilter', 'filter', '__init__', '__str__', '__repr__',
+            'health_check', 'root'
+        }
+        if function_name in utility_functions:
+            return
 
         if class_name:
             full_name = f"{class_name}.{function_name}"
@@ -103,6 +112,14 @@ class CodeParser:
 
     def extract_class(self, node, filepath, service_name, source):
         class_name = node.name
+        
+        # Skip utility/infrastructure classes - only parse business domain classes
+        utility_classes = {
+            'JsonFormatter', 'TraceFilter'
+        }
+        if class_name in utility_classes:
+            return
+        
         summary = ast.get_docstring(node) or f"Class in {service_name}"
 
         if summary:

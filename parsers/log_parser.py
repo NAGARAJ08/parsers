@@ -63,15 +63,29 @@ class LogParser:
                 try:
                     log_entry = json.loads(line)
                     
-                    # Extract log event data
+                    # Extract function from the log message pattern [function_name]
+                    function_name = ''
+                    message = log_entry.get('message', '')
+                    if message.startswith('[') and ']' in message:
+                        function_name = message[1:message.index(']')]
+                    
+                    # Extract extra_data for easier access
+                    extra_data = log_entry.get('extra_data', {})
+                    
+                    # Extract log event data with new fields
                     event = {
                         'timestamp': log_entry.get('timestamp', ''),
                         'service': service_name,
                         'level': log_entry.get('level', ''),
-                        'traceId': trace_id,
+                        'traceId': log_entry.get('trace_id', trace_id),  # Use trace_id from log if available
+                        'orderId': log_entry.get('order_id', ''),  # NEW: Extract order_id
+                        'function': function_name,  # NEW: Extract function name from message [function_name]
                         'message': log_entry.get('message', ''),
-                        'errorCode': log_entry.get('extra_data', {}).get('error_code', ''),
-                        'metadata': json.dumps(log_entry.get('extra_data', {}))
+                        'errorCode': extra_data.get('error_code', ''),
+                        'errorType': extra_data.get('error_type', ''),  # NEW: Exception type
+                        'exception': log_entry.get('exception', ''),  # NEW: Full stack trace
+                        'durationMs': extra_data.get('duration_ms', None),  # NEW: Performance data
+                        'metadata': json.dumps(extra_data)  # Keep full metadata for detailed analysis
                     }
                     
                     self.log_events.append(event)
@@ -105,7 +119,7 @@ class LogParser:
                     'source': current_key,
                     'target': next_key,
                     'type': 'next_log',
-                    'description': f"Temporal sequence in trace {trace_id}"
+                    'description': f"Next log in trace {trace_id}"
                 }
                 self.relationships.append(relationship)
     
@@ -122,17 +136,23 @@ class LogParser:
             # Insert LogEvents
             print(f"\nInserting {len(self.log_events)} log events...")
             for event in self.log_events:
-                # Insert event
+                # Insert event with new fields
                 cursor.execute("""
-                    INSERT INTO LogEvents (timestamp, service, level, traceId, message, errorCode)
-                    VALUES (?, ?, ?, ?, ?, ?)
+                    INSERT INTO LogEvents (timestamp, service, level, traceId, orderId, functionName, message, errorCode, errorType, exception, durationMs, metadata)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (
                     event['timestamp'],
                     event['service'],
                     event['level'],
                     event['traceId'],
+                    event.get('orderId', ''),
+                    event.get('function', ''),
                     event['message'],
-                    event['errorCode']
+                    event.get('errorCode', ''),
+                    event.get('errorType', ''),
+                    event.get('exception', ''),
+                    event.get('durationMs'),
+                    event['metadata']
                 ))
                 
                 # Get the $node_id after insert

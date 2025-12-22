@@ -13,6 +13,9 @@ def cleanup_all_data():
     print(" DATABASE CLEANUP")
     print("="*70)
     
+    
+    
+    
     db_config = DatabaseConfig()
     conn = db_config.get_connection()
     cursor = conn.cursor()
