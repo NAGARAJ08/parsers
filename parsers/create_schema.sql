@@ -18,7 +18,10 @@ GO
 CREATE TABLE CodeNodes (
     id INT IDENTITY(1,1) PRIMARY KEY,
     name NVARCHAR(500) NOT NULL,
-    type NVARCHAR(50) NOT NULL, -- 'function', 'class', 'method', 'module'
+    type NVARCHAR(50) NOT NULL, -- 'function', 'class', 'method', 'module', 'endpoint'
+    parameters NVARCHAR(1000), -- Function parameters: symbol, quantity, order_type
+    api_endpoint NVARCHAR(500), -- API endpoint if exposed: /orders, /trades/validate
+    api_method NVARCHAR(10), -- HTTP method: GET, POST, PUT, DELETE
     summary NVARCHAR(MAX),
     snippet NVARCHAR(MAX),
     filePath NVARCHAR(1000),
@@ -53,6 +56,8 @@ CREATE TABLE Relationships (
     id INT IDENTITY(1,1) PRIMARY KEY,
     relationshipType NVARCHAR(100) NOT NULL, -- 'calls', 'contains', 'next_log', 'executed_in', 'logged_error'
     description NVARCHAR(MAX),
+    call_order INT, -- NEW: Order of function calls (1st, 2nd, 3rd...)
+    line_number INT, -- NEW: Line number in source code where call happens
     timestamp NVARCHAR(100),
     created_at DATETIME DEFAULT GETDATE(),
     CONSTRAINT EC_Relationships CONNECTION (CodeNodes TO CodeNodes, CodeNodes TO LogEvents, LogEvents TO LogEvents) ON DELETE NO ACTION

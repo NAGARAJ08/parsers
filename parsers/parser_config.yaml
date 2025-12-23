@@ -1,0 +1,149 @@
+# Generic Code Parser Configuration
+# Customize this file for your specific project
+
+# Project metadata
+project:
+  name: "Trade Platform"
+  type: "microservices"  # Options: microservices, monolith, library
+  language: "python"
+
+# Code parsing rules
+parsing:
+  # File patterns to include (glob patterns)
+  include_patterns:
+    - "**/*.py"
+  
+  # File patterns to exclude
+  exclude_patterns:
+    - "**/tests/**"
+    - "**/__pycache__/**"
+    - "**/venv/**"
+    - "**/node_modules/**"
+    - "**/.git/**"
+  
+  # Functions to skip (utility/infrastructure code)
+  skip_functions:
+    - "format"
+    - "filter"
+    - "__init__"
+    - "__str__"
+    - "__repr__"
+    - "__eq__"
+    - "__hash__"
+  
+  # Classes to skip (utility/infrastructure classes)
+  skip_classes:
+    - "JsonFormatter"
+    - "TraceFilter"
+    - "Enum"
+    - "BaseModel"
+    - "Field"
+  
+  # Base classes to skip (if a class inherits from these, skip it)
+  skip_base_classes:
+    - "Enum"
+    - "BaseModel"
+    - "ABC"
+
+# Web framework detection
+web_frameworks:
+  # FastAPI
+  fastapi:
+    enabled: true
+    decorators:
+      - "app.get"
+      - "app.post"
+      - "app.put"
+      - "app.delete"
+      - "app.patch"
+      - "router.get"
+      - "router.post"
+      - "router.put"
+      - "router.delete"
+  
+  # Flask
+  flask:
+    enabled: true
+    decorators:
+      - "app.route"
+      - "blueprint.route"
+  
+  # Django
+  django:
+    enabled: false
+    # Django uses urls.py patterns, not decorators
+  
+  # Express.js (if parsing JavaScript)
+  express:
+    enabled: false
+    patterns:
+      - "app.get"
+      - "app.post"
+      - "router.get"
+      - "router.post"
+
+# Service communication patterns
+service_communication:
+  # Pattern 1: Service URL constants
+  url_constants:
+    enabled: true
+    patterns:
+      - "*_SERVICE_URL"      # YOUR_SERVICE_URL = "http://..."
+      - "*_URL"              # API_URL = "http://..."
+      - "*_ENDPOINT"         # PAYMENT_ENDPOINT = "http://..."
+      - "*_BASE_URL"         # AUTH_BASE_URL = "http://..."
+  
+  # Pattern 2: HTTP client function calls
+  http_client_functions:
+    enabled: true
+    function_names:
+      - "call_service"       # Your pattern
+      - "make_request"
+      - "http_request"
+      - "api_call"
+      - "fetch"
+      - "requests.get"
+      - "requests.post"
+      - "httpx.get"
+      - "httpx.post"
+      - "urllib.request"
+  
+  # Pattern 3: gRPC calls
+  grpc:
+    enabled: false
+    stub_patterns:
+      - "*Stub"
+  
+  # Pattern 4: Message queue patterns
+  message_queue:
+    enabled: false
+    publishers:
+      - "publish"
+      - "send_message"
+      - "emit"
+    consumers:
+      - "subscribe"
+      - "on_message"
+      - "consume"
+
+# Database configuration
+database:
+  enabled: true
+  connection_string_env: "DATABASE_URL"  # Or set directly: "server=..."
+  
+# Relationship types to create
+relationship_types:
+  - "CALLS"           # Local function calls
+  - "API_CALLS"       # Cross-service HTTP calls
+  - "CONTAINS"        # Class contains method
+  - "EXPOSES"         # Endpoint exposes function
+  - "IMPORTS"         # Module imports
+  - "INHERITS"        # Class inheritance
+
+# Output configuration
+output:
+  json_export: true
+  json_filename: "code_graph.json"
+  database_export: true
+  console_logging: true
+  verbose: true
