@@ -8,7 +8,7 @@ from typing import Dict, List, Set, Optional, Any
 from db_config import DatabaseConfig
 
 
-class GenericCodeParser:
+class CodeParser:
 
     def __init__(self, config_path: str = "parser_config.yaml", use_database: bool = True):
         self.config = self.load_config(config_path)
@@ -639,7 +639,7 @@ class GenericCodeParser:
 
 
 if __name__ == "__main__":
-    parser = GenericCodeParser(config_path="parser_config.yaml", use_database=True)
+    parser = CodeParser(config_path="parser_config.yaml", use_database=True)
     parser.parse_project("E:/learn_GENAI/git_repo_sample/trade-platform")
     parser.export_to_json("generic_code_graph.json")
     
