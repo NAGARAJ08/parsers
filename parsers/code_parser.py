@@ -137,7 +137,7 @@ class CodeParser:
                 self.extract_service_urls(tree, service_name)
 
             for node in ast.walk(tree):
-                if isinstance(node, ast.FunctionDef):
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                     self.extract_function(node, filepath, service_name, source, tree, None)
                 elif isinstance(node, ast.ClassDef):
                     if not self._should_skip_class(node):
