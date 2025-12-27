@@ -86,15 +86,18 @@ def query_workflows_by_function(function_name: str):
     conn.close()
 
 
-def query_workflow_details(entry_point_name: str):
+def query_workflow_details(function_name: str):
     """
-    RCA Query 2: Get complete details of a specific workflow.
-    Use case: "Show me the complete retail order workflow with all functions"
+    RCA Query 2: Get complete workflow details for ANY function (entry point, middle, or end).
+    Use case: "Show me the complete workflow containing check_order_velocity"
+    
+    If the function is an entry point, shows that workflow.
+    If the function is in the middle/end, finds all workflows containing it and shows them.
     """
     conn = get_connection()
     cursor = conn.cursor()
     
-    # Get workflow metadata
+    # First, try to find if this function is an entry point
     workflow_query = """
     SELECT 
         workflow_id,
@@ -108,17 +111,62 @@ def query_workflow_details(entry_point_name: str):
     WHERE entry_point_name = ?
     """
     
-    cursor.execute(workflow_query, (entry_point_name,))
+    cursor.execute(workflow_query, (function_name,))
     workflow = cursor.fetchone()
     
+    # If not an entry point, find workflows containing this function
     if not workflow:
-        print(f"\n⚠ Workflow '{entry_point_name}' not found\n")
+        print(f"\n'{function_name}' is not an entry point. Searching for workflows containing it...\n")
+        
+        # Find all workflows that contain this function
+        find_workflows_query = """
+        SELECT DISTINCT
+            wc.workflow_id,
+            wc.entry_point_name,
+            wc.workflow_type,
+            wc.full_route,
+            wc.workflow_summary,
+            wc.total_steps,
+            wc.services_involved
+        FROM WorkflowCatalog wc
+        JOIN WorkflowFunctions wf ON wc.workflow_id = wf.workflow_id
+        WHERE wf.function_name = ?
+        ORDER BY wc.workflow_type, wc.entry_point_name
+        """
+        
+        cursor.execute(find_workflows_query, (function_name,))
+        workflows = cursor.fetchall()
+        
+        if not workflows:
+            print(f"⚠ No workflows found containing '{function_name}'\n")
+            cursor.close()
+            conn.close()
+            return
+        
+        print(f"✓ Found {len(workflows)} workflow(s) containing '{function_name}'\n")
+        
+        # Show details for each workflow
+        for workflow in workflows:
+            workflow_id, name, wf_type, route_json, summary, total_steps, services = workflow
+            route = json.loads(route_json)
+            _display_workflow_details(cursor, workflow_id, name, wf_type, route, summary, total_steps, services, function_name)
+        
         cursor.close()
         conn.close()
         return
     
+    # If it IS an entry point, show that workflow
     workflow_id, name, wf_type, route_json, summary, total_steps, services = workflow
     route = json.loads(route_json)
+    
+    _display_workflow_details(cursor, workflow_id, name, wf_type, route, summary, total_steps, services, function_name)
+    
+    cursor.close()
+    conn.close()
+
+
+def _display_workflow_details(cursor, workflow_id, name, wf_type, route, summary, total_steps, services, highlight_function=None):
+    """Helper function to display workflow details"""
     
     print(f"\n{'='*100}")
     print(f"WORKFLOW DETAILS: {name} (Type: {wf_type})")
@@ -149,7 +197,11 @@ def query_workflow_details(entry_point_name: str):
     
     for row in functions:
         step, func_name, service, func_summary, data_contracts_json = row
-        print(f"\n[Step {step}] {func_name} ({service})")
+        
+        # Highlight if this is the target function
+        highlight = " ⭐ [TARGET]" if func_name == highlight_function else ""
+        
+        print(f"\n[Step {step}] {func_name} ({service}){highlight}")
         print(f"  Summary: {func_summary}")
         
         # Show data contracts
@@ -170,8 +222,6 @@ def query_workflow_details(entry_point_name: str):
                 pass
     
     print()
-    cursor.close()
-    conn.close()
 
 
 def query_workflows_by_service(service_name: str):
@@ -359,8 +409,9 @@ if __name__ == "__main__":
         print("1. Find workflows containing a function (RCA for function failures):")
         print("   python query_workflows_rca.py --function check_order_velocity\n")
         
-        print("2. Get complete workflow details:")
-        print("   python query_workflows_rca.py --workflow place_order\n")
+        print("2. Get complete workflow details (works with ANY function - entry, middle, or end):")
+        print("   python query_workflows_rca.py --workflow place_order")
+        print("   python query_workflows_rca.py --workflow check_order_velocity\n")
         
         print("3. Find workflows impacted by a service outage:")
         print("   python query_workflows_rca.py --service risk_service\n")
@@ -373,8 +424,6 @@ if __name__ == "__main__":
         
         print("\nRunning demo queries...\n")
         
-        # Demo query 1
-        query_workflows_by_function('check_order_velocity')
-        
-        # Demo query 2
-        query_workflow_details('place_order')
+        # Demo queries (commented out - user will run with specific args)
+        # query_workflows_by_function('check_order_velocity')
+        # query_workflow_details('check_order_velocity')
