@@ -305,71 +305,103 @@ def list_all_workflows():
 
 def get_context_for_copilot(function_name: str) -> str:
     """
-    Generate context for GitHub Copilot (or any LLM) for RCA.
-    This is the key use case: provide pre-computed context without API calls.
+    Generate COMPLETE workflow context for GitHub Copilot (or any LLM) for RCA.
+    Works with ANY function (entry point, middle, or end).
+    Provides full workflow details so LLM has complete context for analysis.
     """
     conn = get_connection()
     cursor = conn.cursor()
     
-    # Get workflows containing the function
-    query = """
-    SELECT 
-        wc.entry_point_name,
-        wc.workflow_type,
-        wc.workflow_summary,
-        wc.full_route,
-        wf.step_order,
-        wf.function_summary,
-        wf.data_contracts
-    FROM WorkflowCatalog wc
-    JOIN WorkflowFunctions wf ON wc.workflow_id = wf.workflow_id
-    WHERE wf.function_name = ?
-    ORDER BY wc.workflow_type
+    # First check if it's an entry point
+    entry_point_query = """
+    SELECT workflow_id, entry_point_name, workflow_type, workflow_summary, total_steps, services_involved
+    FROM WorkflowCatalog
+    WHERE entry_point_name = ?
     """
+    cursor.execute(entry_point_query, (function_name,))
+    entry_point_result = cursor.fetchone()
     
-    cursor.execute(query, (function_name,))
-    results = cursor.fetchall()
-    
-    if not results:
-        cursor.close()
-        conn.close()
-        return f"No workflows found containing function '{function_name}'"
-    
-    # Build context string (plain text, no markdown)
+    # Build context string
     context = f"RCA CONTEXT FOR FUNCTION: {function_name}\n"
-    context += "="*80 + "\n\n"
-    context += f"AFFECTED WORKFLOWS: {len(results)}\n\n"
+    context += "="*100 + "\n\n"
     
-    for idx, row in enumerate(results, 1):
-        entry_point, wf_type, summary, route_json, step_order, func_summary, data_contracts_json = row
-        route = json.loads(route_json)
+    if entry_point_result:
+        # It's an entry point - show that workflow
+        workflow_id, name, wf_type, summary, total_steps, services = entry_point_result
+        context += f"Function Type: ENTRY POINT (starts the workflow)\n"
+        context += f"Workflows Affected: 1\n\n"
+        context += _build_workflow_context(cursor, workflow_id, name, wf_type, summary, total_steps, services, function_name)
+    else:
+        # Find all workflows containing this function
+        find_workflows_query = """
+        SELECT DISTINCT wc.workflow_id, wc.entry_point_name, wc.workflow_type, 
+               wc.workflow_summary, wc.total_steps, wc.services_involved
+        FROM WorkflowCatalog wc
+        JOIN WorkflowFunctions wf ON wc.workflow_id = wf.workflow_id
+        WHERE wf.function_name = ?
+        ORDER BY wc.workflow_type
+        """
+        cursor.execute(find_workflows_query, (function_name,))
+        workflows = cursor.fetchall()
         
-        context += f"[{idx}] Workflow: {entry_point} (Type: {wf_type})\n"
-        context += f"    Summary: {summary[:200]}...\n"
-        context += f"    Function Position: Step {step_order}/{len(route)}\n"
-        context += f"    Function Role: {func_summary}\n"
+        if not workflows:
+            cursor.close()
+            conn.close()
+            return f"No workflows found containing function '{function_name}'"
         
-        # Add data contract info
+        context += f"Function Type: INTERNAL FUNCTION (called within workflows)\n"
+        context += f"Workflows Affected: {len(workflows)}\n\n"
+        
+        for idx, workflow in enumerate(workflows, 1):
+            workflow_id, name, wf_type, summary, total_steps, services = workflow
+            context += f"[WORKFLOW {idx}]\n"
+            context += _build_workflow_context(cursor, workflow_id, name, wf_type, summary, total_steps, services, function_name)
+            context += "\n" + "-"*100 + "\n\n"
+    
+    cursor.close()
+    conn.close()
+    return context
+
+
+def _build_workflow_context(cursor, workflow_id, name, wf_type, summary, total_steps, services, highlight_function):
+    """Helper to build detailed workflow context for LLM"""
+    context = f"Workflow Name: {name}\n"
+    context += f"Type: {wf_type}\n"
+    context += f"Total Steps: {total_steps}\n"
+    context += f"Services: {services}\n"
+    context += f"Summary: {summary}\n\n"
+    
+    # Get all functions in order
+    functions_query = """
+    SELECT step_order, function_name, service_name, function_summary, data_contracts
+    FROM WorkflowFunctions
+    WHERE workflow_id = ?
+    ORDER BY step_order
+    """
+    cursor.execute(functions_query, (workflow_id,))
+    functions = cursor.fetchall()
+    
+    context += f"COMPLETE EXECUTION PATH ({len(functions)} steps):\n\n"
+    
+    for step, func_name, service, func_summary, data_contracts_json in functions:
+        is_target = func_name == highlight_function
+        marker = " <<<< TARGET FUNCTION" if is_target else ""
+        
+        context += f"Step {step}/{total_steps}: {func_name} [{service}]{marker}\n"
+        context += f"  Purpose: {func_summary}\n"
+        
         if data_contracts_json:
             try:
                 contracts = json.loads(data_contracts_json)
                 if contracts.get('parameters'):
-                    context += f"    Parameters: {', '.join(contracts['parameters'][:5])}\n"
+                    context += f"  Parameters: {', '.join(contracts['parameters'])}\n"
+                if contracts.get('return_type'):
+                    context += f"  Returns: {contracts['return_type']}\n"
                 if contracts.get('fields_accessed'):
-                    context += f"    Fields Accessed: {', '.join(contracts['fields_accessed'][:5])}\n"
+                    context += f"  Accesses: {', '.join(contracts['fields_accessed'])}\n"
             except:
                 pass
-        
-        # Show 2 steps before and after (for context)
-        start_idx = max(0, step_order - 3)
-        end_idx = min(len(route), step_order + 2)
-        context_path = route[start_idx:end_idx]
-        
-        context += f"    Execution Context: {' -> '.join(context_path)}\n"
         context += "\n"
-    
-    cursor.close()
-    conn.close()
     
     return context
 
