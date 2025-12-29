@@ -78,13 +78,14 @@ def get_workflow_path(entry_point_name: str, max_depth: int = 10) -> List[Dict]:
             c.serviceName,
             c.summary as current_summary,
             CAST(c.name AS NVARCHAR(MAX)) as path,
+            CAST('1' AS NVARCHAR(MAX)) AS sort_path,
             1 as depth
         FROM CodeNodes c
         WHERE c.name = ?
         
         UNION ALL
         
-        -- Recursive case: Follow both CALLS and API_CALLS relationships
+        -- Recursive case: Follow both CALLS and API_CALLS relationships WITH call_order
         SELECT 
             called.id,
             called.$node_id,
@@ -93,6 +94,7 @@ def get_workflow_path(entry_point_name: str, max_depth: int = 10) -> List[Dict]:
             called.serviceName,
             called.summary,
             CAST(wp.path + ' -> ' + called.name AS NVARCHAR(MAX)),
+            CAST(wp.sort_path + '.' + RIGHT('000' + CAST(ISNULL(r.call_order, 999) AS VARCHAR), 3) AS NVARCHAR(MAX)),
             wp.depth + 1
         FROM WorkflowPath wp
         JOIN Relationships r ON r.$from_id = wp.node_id_json AND r.relationshipType IN ('CALLS', 'API_CALLS')
@@ -105,9 +107,10 @@ def get_workflow_path(entry_point_name: str, max_depth: int = 10) -> List[Dict]:
         type,
         serviceName,
         current_summary,
-        depth
+        depth,
+        sort_path
     FROM WorkflowPath
-    ORDER BY depth, name
+    ORDER BY sort_path
     """
     
     cursor.execute(query, (entry_point_name,))
@@ -124,7 +127,8 @@ def get_workflow_path(entry_point_name: str, max_depth: int = 10) -> List[Dict]:
                 'type': row[2],
                 'service': row[3],
                 'summary': row[4] or '',
-                'depth': row[5]
+                'depth': row[5],
+                'sort_path': row[6]  # Include sort_path for proper ordering
             })
             seen_functions.add(func_name)
     
